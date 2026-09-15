@@ -13,7 +13,7 @@ VoltSP, Volt's real-time stream processing engine driven by configured pipeline 
 
 A click-to-deploy install runs a demonstration pipeline that prints a message and processes one
 event per day, so that a new instance comes up licensed and healthy without any configuration. Your
-own pipeline is deployed with Helm — see [HELM.md](./HELM.md).
+own pipeline is deployed with Helm — see [HELM.md](https://github.com/VoltDB/voltactivedata-marketplace/blob/main/decision-platform/HELM.md).
 
 ## First steps after deploying
 
@@ -27,7 +27,7 @@ own pipeline is deployed with Helm — see [HELM.md](./HELM.md).
 2. Check that both pods are running: `kubectl -n NAMESPACE get pods`.
 3. Read the VoltSP log to confirm the license loaded and the pipeline started:
    `kubectl -n NAMESPACE logs deployment/volt-streams`.
-4. Replace the demonstration pipeline with your own, using [HELM.md](./HELM.md).
+4. Replace the demonstration pipeline with your own, using [HELM.md](https://github.com/VoltDB/voltactivedata-marketplace/blob/main/decision-platform/HELM.md).
 
 `NAMESPACE` is the namespace you chose on the deploy form.
 
@@ -45,7 +45,7 @@ not cancel the subscription, which is canceled in the Cloud Marketplace console.
 
 ## Documentation and support
 
-- Command-line deployment: [README.md](./README.md)
-- Deploying with Helm and configuring pipelines: [HELM.md](./HELM.md)
+- Command-line deployment: [README.md](https://github.com/VoltDB/voltactivedata-marketplace/blob/main/decision-platform/README.md)
+- Deploying with Helm and configuring pipelines: [HELM.md](https://github.com/VoltDB/voltactivedata-marketplace/blob/main/decision-platform/HELM.md)
 - VoltSP product documentation: https://docs.voltactivedata.com/ActiveSP/
 - Volt Active Data: https://www.voltactivedata.com
