@@ -8,4 +8,4 @@ command-line deployment instructions (and, where applicable, the Helm chart / de
 
 | Product | Directory |
 |---|---|
-| Volt Active Decision Platform (VoltSP + Metering Agent) | [`decision-platform/`](./decision-platform) |
+| Volt Active Decision Platform (VoltSP + Metering Agent) | [`decision-platform/`](./decision-platform) — [overview](./decision-platform/PRODUCT.md), [command line](./decision-platform/README.md), [Helm](./decision-platform/HELM.md) |
