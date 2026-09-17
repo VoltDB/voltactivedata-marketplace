@@ -4,6 +4,11 @@ The Volt Active Decision Platform is published from one build in two forms: as a
 Marketplace Kubernetes application (the **Deploy** button in the Cloud Console) and as the same
 Helm chart in a public OCI repository. This page describes the Helm path.
 
+The product is three things in one chart: 
+**VoltSP**, the stream processing engine that runs your pipeline; 
+**VoltDB**, the database, run by its operator; and the 
+**Volt Management Center (VMC)**, the web console for the database. One license covers all of them.
+
 Billing is the same on both paths. Usage is reported through the reporting secret that Google Cloud
 Marketplace creates for your entitlement, and the chart reads that secret however it was installed.
 
@@ -11,19 +16,19 @@ Marketplace creates for your entitlement, and the chart reads that secret howeve
 
 | | Click to deploy | Helm |
 |---|---|---|
-| What you can configure | The deploy form: instance name, namespace, license, CPU, memory | Every value in the chart |
-| Pipeline | A demonstration pipeline that prints a message once a day | Your pipeline |
-| Pods | One VoltSP pod, no autoscaling | Replica count and autoscaling as you set them |
-| Reconfiguration | Delete the instance and deploy again | `helm upgrade` |
-| Helm release | None. The Marketplace deployer renders the chart and applies the result | A normal Helm release |
+| What you can configure | The deploy form: instance name, namespace, license, CPU and memory of the VoltSP pod and of the VoltDB node | Every value in the chart |
+| Pipeline and schema | A demonstration pipeline that writes one event per second into a one-table demonstration schema | Your pipeline, your schema |
+| Pods | One VoltSP pod, a one-node VoltDB cluster, the VMC; no autoscaling | Replica counts, node count and autoscaling as you set them |
+| Reconfiguration | `helm upgrade` from this chart, see **Upgrade** | `helm upgrade` |
+| Helm release | Yes. The Marketplace deployer installs the chart as a Helm release named after the instance | A normal Helm release |
 
 The deploy form is deliberately small. Use Helm for anything beyond a first look.
 
 ## Prerequisites
 
 - A purchased entitlement for the product on Google Cloud Marketplace.
-- A **VoltSP license file**. Request it from `sales@voltactivedata.com`, quoting the order or
-  entitlement id for your purchase. VoltSP does not start without a license.
+- A **Volt license file**. Request it from `sales@voltactivedata.com`, quoting the order or
+  entitlement id for your purchase. One file licenses VoltSP and VoltDB; neither starts without it.
 - A **GKE cluster in a project linked to the billing account you bought the product with.** That
   link is what gives the cluster access to the product's images: they live in Google's Marketplace
   registry at `gcr.io/cloud-marketplace/voltactivedata-public/volt-active-decision-platform`, and
@@ -105,14 +110,17 @@ helm install voltdp \
   point at that version of the images.
 - `REPORTING_SECRET_NAME` is the Secret from step 2, in the same namespace as the release.
 - `license.xml` is the license file Volt issued for your purchase. Use `--set-file`, which reads
-  the file as it is — no reformatting, no escaping. Without a license the install stops with
+  the file as it is — no reformatting, no escaping. The same file licenses VoltDB; the chart copies
+  it into the Secret the database reads. Without a license the install stops with
   "License has not been provided".
 - `my-values.yaml` is optional on the first install. Without it you get the demonstration pipeline,
-  which prints a message and processes one event per day. See **Configuration** below.
+  which writes one generated event per second into the `events` table of the demonstration schema,
+  and a one-node VoltDB cluster. See **Configuration** below.
 
 The release name (`voltdp` above) is yours to choose too, and it names the Helm release only: the
-Kubernetes objects inside it have fixed names, `volt-streams` and `metering-agent`, because VoltSP
-reaches the Metering Agent at a fixed address. That is why only one release fits in a namespace.
+Kubernetes objects inside it have fixed names (`volt-streams`, `metering-agent`, `voltdb-cluster`,
+`voltdb-vmc`, `voltdb-operator`), because VoltSP reaches the Metering Agent and the database at
+fixed addresses. That is why only one release fits in a namespace.
 
 ## 4. Check the deployment
 
@@ -120,28 +128,69 @@ reaches the Metering Agent at a fixed address. That is why only one release fits
 kubectl -n voltdp get pods
 ```
 
+Five pods reach `Running` and `Ready`: `volt-streams-…`, `metering-agent-…`, `voltdb-operator-…`,
+`voltdb-cluster-0` and `voltdb-vmc-…`. The database takes one to two minutes on a first start.
+
+**Replace the VoltSP pod once after a fresh install.** VoltSP 1.8.5 connects to the database when
+its pipeline starts and does not retry a first connection that failed, so on a fresh install, where
+both start at the same time, VoltSP keeps logging "No connections to cluster" even after the
+database is up. When `voltdb-cluster-0` is `Ready`, run:
+
 ```bash
-kubectl -n voltdp logs deployment/metering-agent
+kubectl -n voltdp delete pod \
+  --selector=app.kubernetes.io/name=volt-streams
 ```
+
+The Deployment creates a new pod at once, and it connects immediately; the client reconnects on its
+own from then on. Delete the pod rather than `kubectl rollout restart`: a rolling restart starts the
+new pod beside the old one and needs a second VoltSP worth of CPU meanwhile, so on a cluster without
+that spare capacity the new pod stays `Pending`. The Marketplace deployer performs this step for
+you; a `helm upgrade` that only changes VoltSP does not need it, because the database is already
+running.
 
 ```bash
 kubectl -n voltdp logs deployment/volt-streams
 ```
 
+VoltSP logs the license it loaded, including how long it has left, and then the pipeline it
+started. VoltSP stays `NotReady` until it holds a valid license, so a VoltSP pod that never becomes
+ready is usually a licensing problem, and its own log states the cause — an expired license, or an
+XML that lost characters on the way in.
+
+```bash
+kubectl -n voltdp logs deployment/metering-agent
+```
+
+The demonstration pipeline writes into the database. Count its rows:
+
+```bash
+kubectl -n voltdp exec voltdb-cluster-0 -- sqlcmd --query='SELECT COUNT(*) FROM events'
+```
+
 The deployment also appears under **Kubernetes Engine → Applications**, where its side panel links
 back to this documentation.
 
-Both pods reach `Running` and `Ready`. VoltSP logs the license it loaded, including how long it
-has left, and then the pipeline it started. VoltSP stays `NotReady` until it holds a valid license,
-so a VoltSP pod that never becomes ready is usually a licensing problem, and its own log states the
-cause — an expired license, or an XML that lost characters on the way in.
+### Open the Volt Management Center
+
+The VMC is the web console for the database cluster: tables, procedures, live statistics, the
+`sqlcmd`-style query window. It runs as a Service inside the cluster and is not exposed outside it.
+Forward its port and open http://localhost:8080 in a browser:
+
+```bash
+kubectl -n voltdp port-forward svc/voltdb-vmc 8080:8080
+```
+
+With VoltDB security off, the chart's default, the console needs no login. Stop the port-forward
+with Ctrl-C; nothing else changes.
 
 ## Configuration
 
 Everything in the [VoltSP Helm chart](https://docs.voltactivedata.com/ActiveSP/) is available under
-the `volt-streams` key. The settings below are the ones most installations change. If you use an AI
-coding agent, the [`voltsp` and `volt-kubernetes` skills](https://github.com/VoltDB/volt-skills) walk
-it through pipeline and Helm configuration — see the [README](./README.md).
+the `volt-streams` key, and everything in the
+[VoltDB Helm chart](https://docs.voltactivedata.com/KubernetesAdmin/) under the `voltdb` key. The
+settings below are the ones most installations change. If you use an AI coding agent, the
+[`voltsp` and `volt-kubernetes` skills](https://github.com/VoltDB/volt-skills) walk it through
+pipeline, schema and Helm configuration — see the [README](./README.md).
 
 ```yaml
 # my-values.yaml
@@ -175,7 +224,53 @@ volt-streams:
     minReplicas: 3
     maxReplicas: 10
     targetCPUUtilizationPercentage: 75
+
+voltdb:
+  cluster:
+    config:
+      deployment:
+        cluster:
+          # Raise kfactor and the node count together; kfactor must stay below the node count.
+          kfactor: 1
+          sitesperhost: 4
+      # Your schema, as SQL. Procedures written in Java go under classes as jars.
+      schemas:
+        schema.sql: |
+          CREATE TABLE orders (id BIGINT NOT NULL, amount DECIMAL, PRIMARY KEY (id));
+          PARTITION TABLE orders ON COLUMN id;
+    clusterSpec:
+      replicas: 3
+      resources:
+        requests:
+          cpu: 4
+          memory: 8Gi
+        limits:
+          cpu: 4
+          memory: 8Gi
 ```
+
+### VoltDB
+
+The chart installs a one-node cluster: `voltdb.cluster.clusterSpec.replicas: 1`, `kfactor: 0`, two
+sites per host, 2 CPU and 4Gi reserved and limited, a 10Gi volume, command log and automatic
+snapshots off. That is a demonstration database, not a durable one. For a real cluster raise the
+node count and `kfactor` together, size the nodes, and turn on the durability features you need in
+`voltdb.cluster.config.deployment`. The volume size cannot change after the first install.
+
+Your pipeline reaches the database at `voltdb-cluster-client:21212` inside the namespace, the
+address the demonstration pipeline uses; see the `voltdb-client` resource in the chart's default
+pipeline for the shape.
+
+The VMC is on by default and is billed like the other pods, at half a core; size it with
+`voltdb.vmc.resources`. It is only reachable by port-forwarding, see **Open the Volt Management
+Center** above.
+
+### Stopping a product
+
+The node count is the switch. `voltdb.cluster.clusterSpec.replicas: 0` stops the database and the
+bill for it while keeping its configuration and its volume; `volt-streams.replicaCount: 0` does the
+same for VoltSP. With both at 0, the only pods left are the VoltDB operator, the Metering Agent and
+the VMC. Set the count back and `helm upgrade` to start again.
 
 ### Pod size
 
@@ -201,18 +296,22 @@ Storage bucket through the GCS FUSE CSI driver) under `/volt-apps`.
 
 ### Licensing
 
-VoltSP needs exactly one of two things, and prefers the first:
+One Volt license covers VoltSP and VoltDB, and one value carries it. VoltSP needs exactly one of
+two things, and prefers the first:
 
 - `volt-streams.streaming.licenseXMLFile` — the license Volt issued for your purchase. This is what
-  both install paths use. Supply it with `--set-file`, as above.
+  both install paths use, and what the database reads too: the chart copies it into the
+  `voltdb-license` Secret. Supply it with `--set-file`, as above.
 - `volt-streams.streaming.licenseServer` — runtime licensing, where VoltSP asks the in-cluster
   Metering Agent, which asks Volt's licensing service for a short-lived license. Switched off.
+  VoltDB has no such path: a database with nodes needs the file, so runtime licensing is for a
+  VoltSP-only install (`voltdb.cluster.clusterSpec.replicas: 0`).
 
 Setting both is safe: VoltSP reads the file and only calls the server if the file is missing or
 unreadable.
 
-The license carries an expiry date, and nothing renews it. VoltSP stops when it passes. Request a
-replacement from `sales@voltactivedata.com` and apply it without downtime:
+The license carries an expiry date, and nothing renews it. VoltSP and VoltDB stop when it passes.
+Request a replacement from `sales@voltactivedata.com` and apply it without downtime:
 
 ```bash
 helm upgrade voltdp \
@@ -241,7 +340,9 @@ The certificate authority, timeout and retry values that path needs are already 
 | `metering-agent.controlPlaneUrl` | Volt's licensing service, used only when runtime licensing is on. |
 | `metering-agent.ubbagent.*`, `metering-agent.usage.*` | The billing dimension and the metered service name for this product. |
 | `metering-agent.enabled` | Turning it off stops usage reporting, which is how the product is billed. |
-| `volt-streams.podLabels`, `metering-agent.podLabels` | Carry the `goog-partner-solution` label that Google requires on every pod of the product. |
+| `volt-streams.podLabels`, `metering-agent.podLabels`, `voltdb.commonLabels` | Carry the `goog-partner-solution` label that Google requires on every pod of the product. |
+| `voltdb.fullnameOverride`, `volt-streams.fullnameOverride` | The fixed object names the pipeline and the Metering Agent rely on. |
+| `voltdb.cluster.clusterSpec.disableFinalizers`, `voltdb.cluster.clusterSpec.deletePVC` | With finalizers on, the operator must be running when the `VoltDBCluster` is deleted; an uninstall removes both at once and can leave the cluster half-deleted for good. See **Uninstall**. |
 
 ## Upgrade
 
@@ -256,6 +357,12 @@ helm upgrade voltdp \
 
 Pass the same values file and the same secret name. A chart version upgrade also moves the images
 to that version.
+
+**An instance deployed from the Cloud Console is a Helm release too**, named after the instance and
+living in the namespace you chose on the form. Upgrade or reconfigure it with the command above,
+using the instance name as the release name; `helm get values RELEASE -n NAMESPACE` shows what the
+form set. Deleting the instance in the Cloud Console removes the release as installed; revisions
+your own `helm upgrade` created afterwards are removed by `helm uninstall`.
 
 **Upgrading from a release installed before chart version 1.0.0** fails with an error about the
 Deployment selector being immutable. That version added a required Google label to the VoltSP pods,
@@ -276,21 +383,46 @@ state of its own.
 helm uninstall voltdp --namespace voltdp
 ```
 
-This removes the release. It does not remove the reporting secret, which Marketplace created and
-which you need again if you reinstall into the same namespace. Usage reporting stops when the pods
-stop; the entitlement itself is cancelled in the Marketplace console, not here.
+This removes the release: VoltSP, the Metering Agent, the VoltDB operator, the VMC and the
+`VoltDBCluster` object. The database's StatefulSet, its pod and its Services go with the
+`VoltDBCluster`, because the operator marks them as owned by it and Kubernetes deletes owned objects
+together with their owner, whether or not the operator is still running. Usage reporting stops when
+the pods stop; the entitlement itself is cancelled in the Marketplace console, not here.
+
+Two things stay behind on purpose:
+
+- **The reporting secret.** Marketplace created it, and you need it again to reinstall into the same
+  namespace.
+- **The VoltDB volume, with your data.** The persistent volume claim is not in the chain of owned
+  objects, for two reasons. A StatefulSet does not own the volume claims it creates, so deleting it
+  leaves them. And the operator can delete the claims itself (`deletePVC: true`), but only through a
+  finalizer that runs while the operator is alive; an uninstall deletes the operator and the
+  `VoltDBCluster` at the same moment, so that finalizer could leave the `VoltDBCluster` half-deleted
+  for good. The chart therefore sets `voltdb.cluster.clusterSpec.disableFinalizers: true`, and the
+  volume is yours to delete. A click-to-deploy instance deleted from the Cloud Console behaves the
+  same way: everything above goes, the volume stays.
+
+To delete the volume and its data, once the database pod is gone:
+
+```bash
+kubectl -n voltdp delete pvc \
+  --selector=voltdb-cluster-name=voltdb-cluster
+```
+
+Deleting the namespace deletes it too. The disk behind the claim is deleted with it (GKE's default
+storage class reclaims on delete), so take a snapshot first if you want to keep the data.
 
 ## Rules and limits
 
 - **One release per namespace.** The Kubernetes object names are fixed, so a second release in the
   same namespace collides with the first.
-- **Do not install into a namespace that holds a click-to-deploy instance.** To move an existing
-  instance to Helm, delete the Application object first, then install with Helm into that
-  namespace and reuse the reporting secret that is already there.
+- **An instance deployed from the Cloud Console already is the release of its namespace.** Do not
+  install a second one there; reconfigure the existing one with `helm upgrade`, see **Upgrade**.
 - **The reporting secret must be in the release's namespace.** A Secret in another namespace is not
   visible to the pods.
 
 ## Support
 
 - VoltSP documentation: https://docs.voltactivedata.com/ActiveSP/
+- VoltDB on Kubernetes: https://docs.voltactivedata.com/KubernetesAdmin/
 - Volt Active Data: https://www.voltactivedata.com
