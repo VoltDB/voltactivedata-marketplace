@@ -131,22 +131,11 @@ kubectl -n voltdp get pods
 Five pods reach `Running` and `Ready`: `volt-streams-…`, `metering-agent-…`, `voltdb-operator-…`,
 `voltdb-cluster-0` and `voltdb-vmc-…`. The database takes one to two minutes on a first start.
 
-**Replace the VoltSP pod once after a fresh install.** VoltSP 1.8.5 connects to the database when
-its pipeline starts and does not retry a first connection that failed, so on a fresh install, where
-both start at the same time, VoltSP keeps logging "No connections to cluster" even after the
-database is up. When `voltdb-cluster-0` is `Ready`, run:
-
-```bash
-kubectl -n voltdp delete pod \
-  --selector=app.kubernetes.io/name=volt-streams
-```
-
-The Deployment creates a new pod at once, and it connects immediately; the client reconnects on its
-own from then on. Delete the pod rather than `kubectl rollout restart`: a rolling restart starts the
-new pod beside the old one and needs a second VoltSP worth of CPU meanwhile, so on a cluster without
-that spare capacity the new pod stays `Pending`. The Marketplace deployer performs this step for
-you; a `helm upgrade` that only changes VoltSP does not need it, because the database is already
-running.
+VoltSP and the database start at the same time, and VoltSP keeps trying its first connection every
+`client.connectRetryDelay` for up to `client.connectTimeout` of the pipeline's `voltdb-client`
+resource (5 seconds and 10 minutes in the chart's pipeline), so the pipeline connects the moment
+the database listens and needs no restart. Until then its log shows "No connections to cluster";
+rows written in that window are retried by the sink's own `retry` settings.
 
 ```bash
 kubectl -n voltdp logs deployment/volt-streams
