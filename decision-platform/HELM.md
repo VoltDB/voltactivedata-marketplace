@@ -90,8 +90,8 @@ Check what you have:
 kubectl -n voltdp get secret REPORTING_SECRET_NAME -o jsonpath='{.data}' | tr ',' '\n'
 ```
 
-All three keys must be present. The Metering Agent uses `entitlement-id` and `consumer-id` to
-request the license and `reporting-key` both to authenticate that request and to report usage.
+All three keys must be present. The Metering Agent reports usage with `consumer-id` and
+`reporting-key`, and reads `entitlement-id` to identify your purchase.
 
 ## 3. Install
 
@@ -285,19 +285,14 @@ Storage bucket through the GCS FUSE CSI driver) under `/volt-apps`.
 
 ### Licensing
 
-One Volt license covers VoltSP and VoltDB, and one value carries it. VoltSP needs exactly one of
-two things, and prefers the first:
+One Volt license covers VoltSP and VoltDB, and one value carries it. VoltSP accepts a license in
+one of two ways, and only the first is supported at the momemnt under marketplace k8s deployment model:
 
 - `volt-streams.streaming.licenseXMLFile` — the license Volt issued for your purchase. This is what
   both install paths use, and what the database reads too: the chart copies it into the
   `voltdb-license` Secret. Supply it with `--set-file`, as above.
 - `volt-streams.streaming.licenseServer` — runtime licensing, where VoltSP asks the in-cluster
-  Metering Agent, which asks Volt's licensing service for a short-lived license. Switched off.
-  VoltDB has no such path: a database with nodes needs the file, so runtime licensing is for a
-  VoltSP-only install (`voltdb.cluster.clusterSpec.replicas: 0`).
-
-Setting both is safe: VoltSP reads the file and only calls the server if the file is missing or
-unreadable.
+  Metering Agent for a license. Not available: Volt's licensing service is not running. Leave it empty.
 
 The license carries an expiry date, and nothing renews it. VoltSP and VoltDB stop when it passes.
 Request a replacement from `sales@voltactivedata.com` and apply it without downtime:
@@ -311,22 +306,10 @@ helm upgrade voltdp \
   --set-file volt-streams.streaming.licenseXMLFile=new-license.xml
 ```
 
-To use runtime licensing instead, ask Volt whether your purchase is set up for it, then:
-
-```yaml
-volt-streams:
-  streaming:
-    licenseXMLFile: ""
-    licenseServer: metering-agent:8443
-```
-
-The certificate authority, timeout and retry values that path needs are already in the chart.
-
 ### Values to leave alone
 
 | Value | Why |
 |---|---|
-| `metering-agent.controlPlaneUrl` | Volt's licensing service, used only when runtime licensing is on. |
 | `metering-agent.ubbagent.*`, `metering-agent.usage.*` | The billing dimension and the metered service name for this product. |
 | `metering-agent.enabled` | Turning it off stops usage reporting, which is how the product is billed. |
 | `volt-streams.podLabels`, `metering-agent.podLabels`, `voltdb.commonLabels` | Carry the `goog-partner-solution` label that Google requires on every pod of the product. |
