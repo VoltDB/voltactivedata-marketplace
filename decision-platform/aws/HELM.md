@@ -13,6 +13,116 @@ Marketplace, and the charges appear on your AWS bill.
 This page describes the whole installation. After you subscribe, the product's launch page in AWS
 Marketplace shows the same commands with your product version filled in.
 
+## Setup script: prerequisites and steps 1 to 3
+
+The script below runs the prerequisite checks and steps 1 to 3 in one go:
+
+1. Save the block below as `volt-aws-setup.sh`.
+2. In the settings at the top of the file, set `REGION` and `CLUSTER` to your cluster's region and
+   name. If the subscribed account is not your default AWS profile, also set `AWS_PROFILE`.
+3. Run it:
+
+```bash
+bash volt-aws-setup.sh
+```
+
+- A failed step stops the script with its error. Fix the cause and run the script again.
+- It points `kubectl` at the cluster, so later commands on this page use that cluster.
+- It can be run again. If the service account `metering-agent` already exists, the script sets its
+  policies again. This repairs a role created with an earlier version of this page, which named
+  only `AWSMarketplaceMeteringRegisterUsage`; that policy does not allow `MeterUsage`, and the
+  install check in step 4 fails without it.
+- The registry login lasts 12 hours. Step 4, `helm install`, stays a manual step; the script ends
+  with it as a comment.
+
+```bash
+#!/usr/bin/env bash
+# Volt Active Decision Platform on AWS Marketplace: the prerequisite checks and steps 1 to 3 of
+# https://github.com/VoltDB/voltactivedata-marketplace/blob/main/decision-platform/aws/HELM.md
+set -euo pipefail
+
+# ---- settings ----------------------------------------------------------------------------------
+REGION=us-east-1                 # your cluster's region
+CLUSTER=my-cluster               # your cluster's name
+# export AWS_PROFILE=my-profile  # the subscribed account, if it is not your default profile
+# -------------------------------------------------------------------------------------------------
+
+NAMESPACE=volt
+REGISTRY=709825985650.dkr.ecr.us-east-1.amazonaws.com
+
+echo "==> Tools"
+for tool in aws kubectl eksctl helm; do
+  command -v "$tool" >/dev/null || { echo "FAIL: $tool is not installed"; exit 1; }
+done
+helm_version="$(helm version --template '{{.Version}}')"
+case "$helm_version" in
+  v3.[0-7].*) echo "FAIL: Helm $helm_version cannot pull from an OCI registry; use 3.8 or later"; exit 1 ;;
+esac
+
+echo "==> AWS identity (the subscribed account)"
+aws sts get-caller-identity \
+  --query Arn \
+  --output text
+
+echo "==> Point kubectl at $CLUSTER in $REGION"
+aws eks update-kubeconfig \
+  --region "$REGION" \
+  --name "$CLUSTER"
+
+echo "==> Default StorageClass"
+default_class="$(kubectl get storageclass \
+  -o jsonpath='{range .items[?(@.metadata.annotations.storageclass\.kubernetes\.io/is-default-class=="true")]}{.metadata.name}{" "}{end}')"
+[ -n "$default_class" ] || { echo "FAIL: no default StorageClass, see Prerequisites"; exit 1; }
+echo "$default_class"
+
+echo "==> IAM OIDC provider"
+eksctl utils associate-iam-oidc-provider \
+  --region "$REGION" \
+  --cluster "$CLUSTER" \
+  --approve
+
+echo "==> Step 1: namespace $NAMESPACE"
+kubectl get namespace "$NAMESPACE" >/dev/null 2>&1 || kubectl create namespace "$NAMESPACE"
+
+echo "==> Step 2: service account metering-agent"
+policies=(
+  --attach-policy-arn arn:aws:iam::aws:policy/AWSMarketplaceMeteringFullAccess
+  --attach-policy-arn arn:aws:iam::aws:policy/AWSMarketplaceMeteringRegisterUsage
+  --attach-policy-arn arn:aws:iam::aws:policy/service-role/AWSLicenseManagerConsumptionPolicy
+)
+eksctl create iamserviceaccount \
+  --region "$REGION" \
+  --cluster "$CLUSTER" \
+  --namespace "$NAMESPACE" \
+  --name metering-agent \
+  "${policies[@]}" \
+  --approve \
+  --override-existing-serviceaccounts
+# create skips an account that already exists; update sets the policies on it.
+eksctl update iamserviceaccount \
+  --region "$REGION" \
+  --cluster "$CLUSTER" \
+  --namespace "$NAMESPACE" \
+  --name metering-agent \
+  "${policies[@]}" \
+  --approve
+
+echo "==> Step 3: log Helm in to the product's registry"
+aws ecr get-login-password \
+  --region us-east-1 \
+  | helm registry login \
+  --username AWS \
+  --password-stdin "$REGISTRY"
+
+echo "==> Done. Next: step 4, helm install"
+# Step 4, by hand: PRODUCT_VERSION from the launch page, and the path of your license file.
+# helm install volt \
+#   oci://709825985650.dkr.ecr.us-east-1.amazonaws.com/volt-active-data-v4sd-test/volt-active-decision-platform \
+#   --version PRODUCT_VERSION \
+#   --namespace volt \
+#   --set-file volt-streams.streaming.licenseXMLFile=volt-license.xml
+```
+
 ## Prerequisites
 
 - **A subscription** to the product in AWS Marketplace, in the AWS account that owns the cluster.
@@ -26,6 +136,8 @@ Marketplace shows the same commands with your product version filled in.
     show one class marked `(default)`.
 - **Tools:** the AWS CLI, `kubectl` pointed at the cluster, `eksctl`, and Helm 3.8 or later. Earlier
   Helm versions cannot pull from an OCI registry.
+- **Set AWS_PROFILE**
+  use `export AWS_PROFILE=NAME` that follows your ~/.aws/config
 
 Point `kubectl` at the cluster:
 
@@ -61,8 +173,8 @@ eksctl utils associate-iam-oidc-provider \
   --approve
 ```
 
-Then create the service account `metering-agent` with the AWS managed policy
-`AWSMarketplaceMeteringRegisterUsage`:
+Then create the service account `metering-agent`. This is the command the launch page shows, with
+the region added:
 
 ```bash
 eksctl create iamserviceaccount \
@@ -70,11 +182,17 @@ eksctl create iamserviceaccount \
   --cluster CLUSTER \
   --namespace volt \
   --name metering-agent \
+  --attach-policy-arn arn:aws:iam::aws:policy/AWSMarketplaceMeteringFullAccess \
   --attach-policy-arn arn:aws:iam::aws:policy/AWSMarketplaceMeteringRegisterUsage \
-  --approve
+  --attach-policy-arn arn:aws:iam::aws:policy/service-role/AWSLicenseManagerConsumptionPolicy \
+  --approve \
+  --override-existing-serviceaccounts
 ```
 
-The name must be `metering-agent`, and the account must be in the release's namespace.
+The name must be `metering-agent`, and the account must be in the release's namespace. The
+metering agent calls only `aws-marketplace:MeterUsage`, which `AWSMarketplaceMeteringFullAccess`
+allows; the other two policies are part of the command AWS generates on the launch page. If the
+service account already exists, `--override-existing-serviceaccounts` adds the role to it.
 
 ## 3. Log in to the product's registry
 
@@ -93,6 +211,8 @@ The cluster pulls the images itself; you do not copy images or create a pull sec
 another region pulls them from `us-east-1` too.
 
 ## 4. Install
+
+For configuration example see `Configuration` section below. 
 
 ```bash
 helm install volt \
@@ -120,11 +240,23 @@ with an error about a failed pre-install hook. Read the cause in the Job's log:
 kubectl -n volt logs job/metering-agent-install-gate
 ```
 
-Fix the cause (step 2, or the subscription). Then remove the failed release and run the same
-`helm install` again:
+Fix the cause (step 2, or the subscription). Then remove the failed release with `--no-hooks` and
+run the same `helm install` again:
 
 ```bash
-helm uninstall volt --namespace volt
+helm uninstall volt \
+  --namespace volt \
+  --no-hooks
+```
+
+Without `--no-hooks`, the uninstall first runs the VoltDB chart's cleanup Job, `voltdb-cleanup`.
+That Job runs under the service account `voltdb-operator`, which a failed install never creates, so
+Helm waits until it times out and leaves the release in status `uninstalling`. The command above
+also removes a release in that status. Then delete the cleanup Job that is left:
+
+```bash
+kubectl -n volt delete job voltdb-cleanup \
+  --ignore-not-found
 ```
 
 Without `--set-file` the install succeeds, but VoltSP and VoltDB do not start: the chart's default
