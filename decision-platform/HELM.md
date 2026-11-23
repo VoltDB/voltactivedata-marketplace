@@ -31,7 +31,7 @@ The deploy form is deliberately small. Use Helm for anything beyond a first look
   entitlement id for your purchase. One file licenses VoltSP and VoltDB; neither starts without it.
 - A **GKE cluster in a project linked to the billing account you bought the product with.** That
   link is what gives the cluster access to the product's images: they live in Google's Marketplace
-  registry at `gcr.io/cloud-marketplace/voltactivedata-public/volt-active-decision-platform`, and
+  registry at `gcr.io/cloud-marketplace/voltactivedata-public/volt-active-data`, and
   the chart points there, so your cluster pulls them directly — you do not copy images or create a
   pull secret. A cluster in a project billed to a different account cannot pull them, and its pods
   stay in `ImagePullBackOff`. If your nodes reach the internet through a proxy, allow
