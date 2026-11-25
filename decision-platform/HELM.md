@@ -34,8 +34,8 @@ The deploy form is deliberately small. Use Helm for anything beyond a first look
   registry at `gcr.io/cloud-marketplace/voltactivedata-public/volt-active-data`, and
   the chart points there, so your cluster pulls them directly — you do not copy images or create a
   pull secret. A cluster in a project billed to a different account cannot pull them, and its pods
-  stay in `ImagePullBackOff`. If your nodes reach the internet through a proxy, allow
-  `marketplace.gcr.io`.
+  stay in `ImagePullBackOff`. If your nodes reach the internet through a proxy, allow `gcr.io`,
+  the registry host in the image references above.
 
   Point `kubectl` at that cluster:
   ```bash
@@ -43,7 +43,8 @@ The deploy form is deliberately small. Use Helm for anything beyond a first look
       --location LOCATION \
       --project PROJECT
   ```
-- Helm 3.8 or later. Earlier versions cannot pull from an OCI repository.
+- Helm 3.14 or later. Helm 3.8 is the first version that pulls from an OCI repository, and the
+  upgrade commands on this page use `--reset-then-reuse-values`, added in Helm 3.14.
 - The **Application CRD** on the cluster, installed once per cluster:
   ```bash
   kubectl apply -f https://raw.githubusercontent.com/GoogleCloudPlatform/marketplace-k8s-app-tools/master/crd/app-crd.yaml
@@ -76,13 +77,16 @@ in its own namespace.
 
 1. Open the product in the Cloud Console and choose **Deploy via command line** on the purchased
    entitlement.
-2. Run the command the console shows (`kubectl apply -f service-account-key.yaml`), targeting the
-   namespace from step 1 — add `-n voltdp` if the manifest does not name one. It creates a Secret
-   with three keys: `consumer-id`, `entitlement-id`, and `reporting-key`.
-3. Note the Secret's name. You pass it to Helm in the next step.
+2. Run the command the console shows (`kubectl apply -f service-account-key.yaml`) in the namespace
+   from step 1. The manifest names no namespace, so add `-n voltdp`. It creates a Secret with three
+   keys: `consumer-id`, `entitlement-id`, and `reporting-key`.
+3. Note the Secret's name (`metadata.name` in the manifest, for example
+   `volt-active-data-license-1234`). Despite the name, it is the reporting secret, not your Volt
+   license. You pass it to Helm in the next step.
 
-If you already deployed this product from the console, its namespace already holds the Secret. Use
-that namespace instead and skip step 1.
+If you already deployed this product from the console, do not install into its namespace: that
+instance already is the Helm release of its namespace (see **Rules and limits**). Reconfigure it
+with `helm upgrade` instead, see **Upgrade**; its namespace already holds the reporting secret.
 
 Check what you have:
 
@@ -105,9 +109,10 @@ helm install voltdp \
   --values my-values.yaml
 ```
 
-- `PRODUCT_VERSION` is the product version shown on the Marketplace listing, for example `1.0.0`.
-  The chart version and the product version are the same number, and the chart's image defaults
-  point at that version of the images.
+- `PRODUCT_VERSION` is the full product version, `X.Y.Z`, for example `1.2.5`. The Marketplace
+  listing shows only `X.Y` (for example `1.2`), and Helm needs the full number: `--version 1.2`
+  fails with "not found". The chart version and the product version are the same number, and the
+  chart's image defaults point at that version of the images.
 - `REPORTING_SECRET_NAME` is the Secret from step 2, in the same namespace as the release.
 - `license.xml` is the license file Volt issued for your purchase. Use `--set-file`, which reads
   the file as it is — no reformatting, no escaping. The same file licenses VoltDB; the chart copies
@@ -142,9 +147,13 @@ kubectl -n voltdp logs deployment/volt-streams
 ```
 
 VoltSP logs the license it loaded, including how long it has left, and then the pipeline it
-started. VoltSP stays `NotReady` until it holds a valid license, so a VoltSP pod that never becomes
-ready is usually a licensing problem, and its own log states the cause — an expired license, or an
-XML that lost characters on the way in.
+started. Without a valid license VoltSP exits at startup, so a VoltSP pod in `CrashLoopBackOff` is
+usually a licensing problem. The log of the failed start states the cause — an expired license, or
+an XML that lost characters on the way in:
+
+```bash
+kubectl -n voltdp logs deployment/volt-streams --previous
+```
 
 ```bash
 kubectl -n voltdp logs deployment/metering-agent
@@ -261,9 +270,10 @@ bill for it while keeping its configuration and its volume; `volt-streams.replic
 same for VoltSP. With both at 0, the only pods left are the VoltDB operator, the Metering Agent and
 the VMC. Set the count back and `helm upgrade` to start again.
 
-### Pod size
+### VoltSP pod size
 
-The chart reserves 4 CPU cores and 5Gi, and sets the same values as limits. Equal requests and
+For the VoltSP pod the chart reserves 4 CPU cores and 5Gi, and sets the same values as limits. The
+VoltDB node is sized separately, see **VoltDB** above. Equal requests and
 limits give the pod Guaranteed quality of service: VoltSP is not throttled below what it reserved,
 and it is evicted only after pods that reserved less. Change both together. A request above its
 limit is rejected when the pod is created, and a limit well above the request lets VoltSP burst
@@ -286,13 +296,13 @@ Storage bucket through the GCS FUSE CSI driver) under `/volt-apps`.
 ### Licensing
 
 One Volt license covers VoltSP and VoltDB, and one value carries it. VoltSP accepts a license in
-one of two ways, and only the first is supported at the momemnt under marketplace k8s deployment model:
+one of two ways; Marketplace deployments support only the first:
 
 - `volt-streams.streaming.licenseXMLFile` — the license Volt issued for your purchase. This is what
   both install paths use, and what the database reads too: the chart copies it into the
   `voltdb-license` Secret. Supply it with `--set-file`, as above.
 - `volt-streams.streaming.licenseServer` — runtime licensing, where VoltSP asks the in-cluster
-  Metering Agent for a license. Not available: Volt's licensing service is not running. Leave it empty.
+  Metering Agent for a license. Not supported in Marketplace deployments; leave it empty.
 
 The license carries an expiry date, and nothing renews it. VoltSP and VoltDB stop when it passes.
 Request a replacement from `sales@voltactivedata.com` and apply it without downtime:
@@ -302,7 +312,7 @@ helm upgrade voltdp \
   oci://us-docker.pkg.dev/voltactivedata-public/charts/vsp-marketplace \
   --version PRODUCT_VERSION \
   --namespace voltdp \
-  --reuse-values \
+  --reset-then-reuse-values \
   --set-file volt-streams.streaming.licenseXMLFile=new-license.xml
 ```
 
@@ -323,12 +333,17 @@ helm upgrade voltdp \
   oci://us-docker.pkg.dev/voltactivedata-public/charts/vsp-marketplace \
   --version NEW_PRODUCT_VERSION \
   --namespace voltdp \
-  --set metering-agent.reporting.secretName=REPORTING_SECRET_NAME \
+  --reset-then-reuse-values \
   --values my-values.yaml
 ```
 
-Pass the same values file and the same secret name. A chart version upgrade also moves the images
-to that version.
+`--reset-then-reuse-values` keeps every value the release was installed with — the license, the
+reporting secret name and, for an instance deployed from the Cloud Console, the sizes set on the
+form — and takes the new chart version's defaults, including its images. Pass `--values` or `--set`
+only for what you change. Do not use `--reuse-values` for a version upgrade: it also keeps the
+previous version's chart defaults, so the images stay at the old version. Without either flag Helm
+starts from the chart's defaults alone, the license is missing, and the upgrade stops with
+"License has not been provided".
 
 **An instance deployed from the Cloud Console is a Helm release too**, named after the instance and
 living in the namespace you chose on the form. Upgrade or reconfigure it with the command above,
@@ -371,8 +386,16 @@ Two things stay behind on purpose:
   finalizer that runs while the operator is alive; an uninstall deletes the operator and the
   `VoltDBCluster` at the same moment, so that finalizer could leave the `VoltDBCluster` half-deleted
   for good. The chart therefore sets `voltdb.cluster.clusterSpec.disableFinalizers: true`, and the
-  volume is yours to delete. A click-to-deploy instance deleted from the Cloud Console behaves the
-  same way: everything above goes, the volume stays.
+  volume is yours to delete.
+
+A click-to-deploy instance deleted from the Cloud Console also leaves the volume, with two
+differences: the reporting secret the console created is deleted with the instance, and the
+cluster-wide `ClusterRole` and `ClusterRoleBinding` named `voltdb-cluster-nodes-NAMESPACE` stay
+behind. Delete them once the instance is gone:
+
+```bash
+kubectl delete clusterrolebinding,clusterrole voltdb-cluster-nodes-NAMESPACE
+```
 
 To delete the volume and its data, once the database pod is gone:
 
